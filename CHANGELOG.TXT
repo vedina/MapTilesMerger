@@ -1,0 +1,7 @@
+Changes Made
+Upgraded syntax to Python 3 (e.g., print function).
+Used os.path.join for cross-platform and safer path handling.
+Removed hardcoded "JPEG" output format. The script now respects the specified output filename extension (e.g., .tif).
+Increased Image.MAX_IMAGE_PIXELS to allow merging large maps.
+Improved error handling for missing directories or files.
+Added numeric sorting for row/column directories and files to ensure correct image assembly.
