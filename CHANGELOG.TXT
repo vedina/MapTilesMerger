@@ -1,4 +1,6 @@
-Changes Made
+Changes Made  
+
+Dec 2025
 Upgraded syntax to Python 3 (e.g., print function).
 Used os.path.join for cross-platform and safer path handling.
 Removed hardcoded "JPEG" output format. The script now respects the specified output filename extension (e.g., .tif).
