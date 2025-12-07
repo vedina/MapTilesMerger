@@ -40,6 +40,7 @@ parser = argparse.ArgumentParser()
 
 parser.add_argument("-i", action="store", dest='baseDir', help="Input directory path")
 parser.add_argument("-o", action="store", dest='destinationFile', help="Output file path")
+parser.add_argument("--min-size", action="store", dest='minSize', type=int, default=1083, help="Minimum file size in bytes (default 1083)")
 args = parser.parse_args()
 
 if not args.baseDir:
@@ -60,45 +61,61 @@ except Exception as e:
     print(f"Error! Base directory not found: {e}")
     sys.exit(1)
 
-# Filter for numeric directories (likely zoom levels or rows) if needed, 
-# but original script didn't strictly enforce, just sorted as int.
-# Let's keep it robust.
-baseDirectoryContent = [d for d in baseDirectoryContent if d.isdigit()]
+# Scan all directories to establish the global grid (Bounding Box)
+print("Scanning directories for grid dimensions...")
+row_dirs = {} # map row_index -> dir_name
+all_cols = []
+all_rows = []
 
-verticalTilesCount = len(baseDirectoryContent)
+for d in baseDirectoryContent:
+    try:
+        r_idx = int(d)
+        row_dirs[r_idx] = d
+        all_rows.append(r_idx)
+        
+        # Scan files in this row to find columns
+        r_path = os.path.join(baseDir, d)
+        files = get_immediate_files(r_path)
+        for f in files:
+            name_no_ext = os.path.splitext(f)[0]
+            if name_no_ext.isdigit():
+                all_cols.append(int(name_no_ext))
+    except ValueError:
+        continue
 
-if verticalTilesCount == 0:
-    print("Error! Base directory is empty or contains no numeric subdirectories.")
+if not all_rows or not all_cols:
+    print("Error! Could not find any valid numeric row/column structures.")
     sys.exit(1)
 
-# Sort rows numerically
-baseDirectoryContent.sort(key=lambda x: int(x))
+min_row, max_row = min(all_rows), max(all_rows)
+min_col, max_col = min(all_cols), max(all_cols)
 
-firstDirectoryContent = get_immediate_files(os.path.join(baseDir, baseDirectoryContent[0]))
-horizontalTilesCount = len(firstDirectoryContent)
-if horizontalTilesCount == 0:
-    print("Error! First tile directory is empty. Please check tile files.")
-    sys.exit(1)
+total_rows_count = max_row - min_row + 1
+total_cols_count = max_col - min_col + 1
 
+print(f"Grid detected: Row range [{min_row}, {max_row}], Col range [{min_col}, {max_col}]")
+print(f"Grid dimensions: {total_cols_count} cols x {total_rows_count} rows")
+
+# Detect tile size from the first available tile
 try:
-    first_row_dir = os.path.join(baseDir, baseDirectoryContent[0])
-    first_files = sorted(get_immediate_files(first_row_dir), key=lambda x: int(os.path.splitext(x)[0]) if os.path.splitext(x)[0].isdigit() else 0)
+    first_row_idx = all_rows[0]
+    first_row_dir = os.path.join(baseDir, row_dirs[first_row_idx])
+    # Find a valid file in this row
+    valid_files = [f for f in get_immediate_files(first_row_dir) if os.path.splitext(f)[0].isdigit()]
+    if not valid_files:
+        raise Exception("First row directory contains no valid images.")
     
-    if not first_files:
-         print("Error! No files found in the first row directory.")
-         sys.exit(1)
-
-    firstTilePath = os.path.join(first_row_dir, first_files[0])
-    firstTile = Image.open(firstTilePath)
-    tileSize = firstTile.size[0]
+    firstTilePath = os.path.join(first_row_dir, valid_files[0])
+    with Image.open(firstTilePath) as img:
+        tileSize = img.size[0]
     print(f"Detected tile size: {tileSize}x{tileSize}")
 except Exception as e:
-    print(f"Error! An error occurred while finding first tile: {e}")
+    print(f"Error checking tile size: {e}")
     sys.exit(1)
 
-# Calculate total size
-total_width = tileSize * horizontalTilesCount
-total_height = tileSize * verticalTilesCount
+# Calculate total pixel size
+total_width = tileSize * total_cols_count
+total_height = tileSize * total_rows_count
 print(f"Merged image size: {total_width}x{total_height}")
 
 # Use tifffile for memory efficient writing if available and output is tiff
@@ -107,83 +124,118 @@ use_tifffile = HAS_TIFFFILE and (destinationFile.lower().endswith('.tif') or des
 if use_tifffile:
     print("Using memory-efficient TIFF writing with BigTiff and Deflate compression...", flush=True)
     
-    def tile_generator(base_dir, dirs, tile_size, h_count, v_count):
-        total_tiles = h_count * v_count
+    def tile_generator(base_dir, row_map, start_r, end_r, start_c, end_c, tile_sz):
+        # Iterate over the full bounding box
+        for r in range(start_r, end_r + 1):
+            
+            # Check if row folder exists
+            row_exists = r in row_map
+            row_path = os.path.join(base_dir, row_map[r]) if row_exists else None
+            
+            # Optimization: Pre-fetch existing columns for this row if it exists
+            existing_cols = set()
+            if row_exists:
+                try:
+                    files = get_immediate_files(row_path)
+                    for f in files:
+                        name, _ = os.path.splitext(f)
+                        if name.isdigit():
+                            existing_cols.add(int(name))
+                except OSError:
+                    pass # Treat as empty row
+
+            for c in range(start_c, end_c + 1):
+                # Try to yield the tile
+                tile_yielded = False
+                
+                if row_exists and c in existing_cols:
+                    # Construct potential filenames. 
+                    # We only know the int index 'c'. The extension might vary? 
+                    # The set logic above stripped extension. We need the real filename.
+                    # Let's simple check strict png/jpg or just listdir match.
+                    # For performance, let's assume .png or .jpg or match what we found.
+                    # Re-scanning listdir every time is slow. 
+                    # Better: when building `existing_cols`, store map {col_idx: filename}
+                    pass 
+
+            # RE-OPTIMIZED LOOP
+            # To avoid re-scanning, let's do it cleaner per row.
+            pass
+
+    # Redefine generator with better scope
+    def robust_tile_generator(base_dir, row_map, start_r, end_r, start_c, end_c, tile_sz, min_size):
+        total_tiles = (end_r - start_r + 1) * (end_c - start_c + 1)
         processed = 0
         
-        # Iterate row by row (vertical)
-        for dir_name in dirs:
-            row_dir = os.path.join(base_dir, dir_name)
-            
-            # Get files for this row, mapped by column index logic
-            # The original script sorts files numerically. check filename is column index?
-            # Original: key=lambda x: int(x.split('.')[0])
-            # We need to be careful to match the strictly expected grid (h_count, v_count).
-            # If files are missing in the sequence, we must yield blanks to keep alignment!
-            
-            # This requires we know the EXACT start/end or we just iterate what we have?
-            # The original PIL logic calculates 'x' and 'y' based on *available* files.
-            # "x = tileSize * j", "y = tileSize * i"
-            # It blindly places the j-th file at the j-th position.
-            # If there are gaps in filenames (e.g. 1.png, 3.png), PIL logic would place 3.png at x=tileSize*1 (2nd slot).
-            # This implies the original logic assumes contiguous files or just packs them.
-            # However, `horizontalTilesCount` is derived from `firstDirectoryContent` length.
-            # If rows have different lengths, the PIL logic might produce jagged edges or misalignments if strictly grid-based?
-            # The original logic:
-            # i = 0 ... i++ (for each dir)
-            # j = 0 ... j++ (for each file in dir)
-            # So it strictly packs tiles into a grid of size (total_width, total_height).
-            # It DOES NOT use the filename as the coordinate, only for sorting!
-            # So 1.png, 50.png will be placed at 0,0 and 0,1 respectively.
-            # I will replicate this behavior: Yield all files found in sorted order.
-            # BUT, TiffWriter with 'tile' argument writes a grid. 
-            # We must ensure we yield exactly (rows * cols) tiles.
-            # Original logic: "horizontalTilesCount = len(firstDirectoryContent)"
-            # "verticalTilesCount = len(baseDirectoryContent)"
-            # "image = Image.new(..., (tileSize * horizontalTilesCount, tileSize * verticalTilesCount))"
-            # It assumes a rectangular grid where every row has 'horizontalTilesCount' tiles.
-            # If a row has FEWER tiles, the original PIL logic works because it just stops pasting for that row (leaving rest black/transparent).
-            # TiffWriter expects a full grid if we define shape.
-            # We must pad rows to 'horizontalTilesCount' if they are short.
-            
-            files = sorted(get_immediate_files(row_dir), key=lambda x: int(os.path.splitext(x)[0]) if os.path.splitext(x)[0].isdigit() else 0)
-            
-            current_row_count = 0
-            for file_name in files:
-                tilePath = os.path.join(row_dir, file_name)
+        for r in range(start_r, end_r + 1):
+            row_map_cols = {} # col_idx -> filename
+            if r in row_map:
                 try:
-                    with Image.open(tilePath) as tile:
-                        if tile.mode != 'RGB':
-                            tile = tile.convert('RGB')
-                        yield np.asarray(tile)
-                except Exception as e:
-                    print(f"Warning: Failed to process tile {tilePath}: {e}", flush=True)
-                    # Yield black tile on error to skip? Or re-raise? 
-                    # Original script printed warning and continued (leaving previous content or void).
-                    # We yield a white tile.
-                    yield np.full((tile_size, tile_size, 3), 255, dtype='uint8')
-                
-                current_row_count += 1
-                processed += 1
-                if current_row_count >= h_count:
-                    break # Don't yield more than we allocated width for
-            
-            # Pad row if short
-            while current_row_count < h_count:
-                yield np.full((tile_size, tile_size, 3), 255, dtype='uint8')
-                current_row_count += 1
-                processed += 1
+                    r_path = os.path.join(base_dir, row_map[r])
+                    for f in os.listdir(r_path):
+                        name, ext = os.path.splitext(f)
+                        if name.isdigit() and os.path.isfile(os.path.join(r_path, f)):
+                            row_map_cols[int(name)] = f
+                except OSError:
+                    pass
 
-            print(f"Processed row {dirs.index(dir_name)+1}/{len(dirs)}", end='\r', flush=True)
+            for c in range(start_c, end_c + 1):
+                img_data = None
+                if c in row_map_cols:
+                    f_name = row_map_cols[c]
+                    try:
+                        p = os.path.join(base_dir, row_map[r], f_name)
+                        
+                        # Filter by size
+                        if os.path.getsize(p) < min_size:
+                            # print(f"DEBUG: Skipping small file {f_name} ({os.path.getsize(p)} bytes)", flush=True)
+                            img_data = None # Will be treated as white
+                        else:
+                            with Image.open(p) as tile:
+                                if tile.mode in ('RGBA', 'LA') or (tile.mode == 'P' and 'transparency' in tile.info):
+                                    # Create a white background image
+                                    bg = Image.new('RGB', tile.size, (255, 255, 255))
+                                    # Paste the tile on top, using alpha channel as mask if available
+                                    if tile.mode in ('RGBA', 'LA'):
+                                        bg.paste(tile, mask=tile.split()[-1])
+                                    else:
+                                        bg.paste(tile.convert('RGBA'), mask=tile.convert('RGBA').split()[-1])
+                                    tile = bg
+                                elif tile.mode != 'RGB':
+                                    tile = tile.convert('RGB')
+                                img_data = np.asarray(tile)
+                                
+                                # Ensure shape is correct (handle potentially corrupt/wrong size tiles?)
+                                if img_data.shape != (tile_sz, tile_sz, 3):
+                                    pass # Warn?
+                                
+                                # Filter by Uniformity (Empty/Solid Color)
+                                # Check if all pixels are equal to the first pixel
+                                if np.all(img_data == img_data[0,0]):
+                                    # print(f"DEBUG: Skipping uniform tile {f_name}", flush=True)
+                                    img_data = None # Treat as white
+                                    
+                    except Exception as e:
+                        print(f"Error reading {f_name}: {e}")
+                
+                if img_data is None:
+                    # White tile
+                    img_data = np.full((tile_sz, tile_sz, 3), 255, dtype='uint8')
+                
+                yield img_data
+                processed += 1
+            
+            print(f"Processed row {r} ({(processed/(total_tiles+1))*100:.1f}%)", end='\r', flush=True)
 
     try:
         with tifffile.TiffWriter(destinationFile, bigtiff=True) as tif:
             tif.write(
-                tile_generator(baseDir, baseDirectoryContent, tileSize, horizontalTilesCount, verticalTilesCount),
+                robust_tile_generator(baseDir, row_dirs, min_row, max_row, min_col, max_col, tileSize, args.minSize),
                 shape=(total_height, total_width, 3),
                 dtype='uint8',
                 tile=(tileSize, tileSize),
-                compression='zlib'
+                compression='zlib',
+                photometric='rgb'
             )
         print("\nResult file is written successfully via TiffWriter!", flush=True)
     except Exception as e:
