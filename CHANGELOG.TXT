@@ -5,3 +5,8 @@ Removed hardcoded "JPEG" output format. The script now respects the specified ou
 Increased Image.MAX_IMAGE_PIXELS to allow merging large maps.
 Improved error handling for missing directories or files.
 Added numeric sorting for row/column directories and files to ensure correct image assembly.
+Implemented robust grid-based merging: scans all folders to determine true map dimensions and strictly maps tiles to coordinates.
+Added handling for missing tiles: missing row or column positions are now filled with white tiles instead of causing misalignment.
+Added transparency support: RGBA/transparent tiles are composited onto a white background to prevent black backgrounds.
+Added `--min-size` CLI argument (default 1083 bytes) to treat small files (e.g. empty tiles) as missing/white.
+Added uniformity check: tiles containing a single solid color are treated as missing/white.
