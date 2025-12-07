@@ -160,8 +160,8 @@ if use_tifffile:
                     print(f"Warning: Failed to process tile {tilePath}: {e}", flush=True)
                     # Yield black tile on error to skip? Or re-raise? 
                     # Original script printed warning and continued (leaving previous content or void).
-                    # We yield a black tile.
-                    yield np.zeros((tile_size, tile_size, 3), dtype='uint8')
+                    # We yield a white tile.
+                    yield np.full((tile_size, tile_size, 3), 255, dtype='uint8')
                 
                 current_row_count += 1
                 processed += 1
@@ -170,7 +170,7 @@ if use_tifffile:
             
             # Pad row if short
             while current_row_count < h_count:
-                yield np.zeros((tile_size, tile_size, 3), dtype='uint8')
+                yield np.full((tile_size, tile_size, 3), 255, dtype='uint8')
                 current_row_count += 1
                 processed += 1
 
@@ -198,7 +198,7 @@ else:
         print("tifffile not found, falling back to PIL in-memory merge (high memory usage).")
 
     try:
-        image = Image.new('RGB', (total_width, total_height))
+        image = Image.new('RGB', (total_width, total_height), (255, 255, 255))
         
         i = 0
         for dir_name in baseDirectoryContent:
